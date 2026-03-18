@@ -1,0 +1,39 @@
+name: Process credential claims
+
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+      - edited
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  process-claims:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'skillcraft-claim')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Process credential claim issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/process-claim.mjs
+
+      - name: Commit issued credential updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add credentials/index.json issued/users/index.json issued/users/
+          if git diff --cached --quiet; then
+            echo "No credential updates."
+            exit 0
+          fi
+          git commit -m "chore: issue credential for #${{ github.event.issue.number }}"
+          git push

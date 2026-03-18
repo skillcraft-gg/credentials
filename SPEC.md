@@ -2,104 +2,139 @@
 
 ## Purpose
 
-The credentials repository defines credential rules and manages credential issuance.
+The `credentials` repository defines credentials, evaluates claim issues, and
+stores issued credential receipts for public discovery.
 
-Published site:
+Published site surface:
 
-skillcraft.gg/credentials (rendered by skillcraft-gg.github.io)
+- `skillcraft.gg/credentials` (rendered by `skillcraft-gg.github.io`)
 
 Source of truth:
 
-The credentials definitions in this repository.
-
-Deployment model:
-
-/credentials content is generated from this source during Pages builds.
-
----
+- Credential definitions and issued receipts in this repository.
 
 ## Identifier Format
 
-/
+Credential identifiers use `owner/slug`, for example:
 
-Example:
+- `skillcraft-gg/hello-world`
 
-skillcraft-gg/practitioner-threat-model-l1
+## Repository Layout
 
----
+Credential definitions use a folder layout:
+
+```
+credentials/
+  <owner>/
+    <slug>/
+      credential.yaml
+      credential.png
+      background.png
+```
+
+Issued credentials are written in a collision-safe namespace:
+
+```
+issued/
+  users/
+    <github>/
+      <owner>/
+        <slug>/
+          credential.yaml
+```
 
 ## Credential Definition
 
-Example:
+```yaml
+id: skillcraft-gg/hello-world
+name: Hello World
+description: First credential for claim workflow verification
+requirements:
+  min_commits: 1
+```
+
+`requirements.mode` controls whether skill/loadout constraints are evaluated in
+`and` or `or` mode.
 
 ```yaml
-id: skillcraft-gg/practitioner-threat-model-l1
-name: Threat Model I
 requirements:
-  skill: blairhudson/threat-model
   min_commits: 3
+  mode: and | or
+  skill:
+    - blairhudson/threat-model
+    - skillcraft-gg/code-review
+  loadout:
+    - blairhudson/secure-dev
 
-Example loadout credential:
+images:
+  credential: credential.png
+  background: background.png
+```
 
-id: skillcraft-gg/loadout-secure-dev-l1
-requirements:
-  loadout: blairhudson/secure-dev
-  min_commits: 5
+- `mode: and` means all declared skill/loadout requirements must be met.
+- `mode: or` means at least one declared requirement must be met.
+- If no skill or loadout requirements are declared, validation is only `min_commits`.
 
+`images.credential` and `images.background` are optional and resolved relative to
+the credential definition folder.
 
-⸻
+## Claim Submission
 
-Claim Submission
+`skillcraft claim <credential-id>` creates a GitHub issue in
+`skillcraft-gg/credentials` labeled `skillcraft-claim`.
 
-skillcraft claim <credential>
+Claim payload uses YAML:
 
-CLI creates a GitHub issue.
-
-⸻
-
-Claim Payload
-
+```yaml
+claim_version: 1
 claimant:
   github: blairhudson
-credential: skillcraft-gg/loadout-secure-dev-l1
+credential:
+  id: skillcraft-gg/hello-world
 sources:
   - repo: https://github.com/blairhudson/project-a
     commits:
       - a1b2c3
+claim_id: sha256:5f9d1e
+```
 
+## Claim Verification
 
-⸻
+GitHub Actions verifies:
 
-Claim Verification
+- claim format and target credential definition
+- repository access and commit existence
+- proof object availability for claimed commits
+- requirement checks using configured mode (`and`/`or`)
 
-GitHub Actions verify:
-	•	commit existence
-	•	proof objects
-	•	skill identifiers
-	•	loadout context if required
+On success, issue labels are set to `skillcraft-verified` and `skillcraft-issued`
+and an issued credential is written.
+The claim workflow also refreshes `credentials/index.json` and
+`issued/users/index.json` and commits those index updates when they change.
 
-⸻
+On failure, issue label is set to `skillcraft-rejected` with an issue comment.
 
-Credential Issuance
+## Credential Issuance
 
-Credentials written to:
+Issued credentials are generated at:
 
-issued/users/<github>/<credential>.yaml
+`issued/users/<github>/<owner>/<slug>/credential.yaml`
 
 Example:
 
-definition: skillcraft-gg/loadout-secure-dev-l1
+```yaml
+definition: skillcraft-gg/hello-world
 subject:
   github: blairhudson
-issued_at: 2026-03-15
+issued_at: 2026-03-15T10:05:00Z
+claim_id: sha256:5f9d1e
+source_commits:
+  - a1b2c3
+```
 
+## Registry Indexes
 
-⸻
+Discovery artifacts are generated in-repo:
 
-Profiles
-
-Developer pages generated from issued credentials.
-
-Example:
-
-/credentials/users/blairhudson
+- `credentials/index.json` (all credential definitions)
+- `issued/users/index.json` (issued credentials grouped by GitHub user)
