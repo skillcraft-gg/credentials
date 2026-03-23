@@ -127,14 +127,217 @@ async function scanIssuedCredentials() {
   return normalizedUsers
 }
 
-function normalizeRequirements(value) {
+export function normalizeRequirements(value) {
   const requirements = isObject(value) ? value : {}
+
+  if (requirements.mode !== undefined) {
+    throw new Error('requirements.mode is not supported. Use nested and/or expressions instead.')
+  }
+
+  const tree = normalizeRequirementRoot(requirements)
 
   return {
     minCommits: normalizeNonNegativeInteger(requirements.min_commits, 0),
-    mode: requirements.mode === 'or' ? 'or' : 'and',
-    skill: normalizeStringList(requirements.skill),
-    loadout: normalizeStringList(requirements.loadout),
+    minRepositories: normalizeNonNegativeInteger(requirements.min_repositories ?? requirements.minRepositories, 0),
+    tree,
+  }
+}
+
+function normalizeRequirementRoot(value) {
+  const hasExplicitAnd = Object.prototype.hasOwnProperty.call(value, 'and')
+  const hasExplicitOr = Object.prototype.hasOwnProperty.call(value, 'or')
+
+  if (hasExplicitAnd && hasExplicitOr) {
+    throw new Error('requirements cannot include both and and or at the same level')
+  }
+
+  if (hasExplicitAnd) {
+    const unexpected = Object.keys(value).filter(
+      (key) => !['and', 'min_commits', 'min_repositories', 'minRepositories'].includes(key),
+    )
+    if (unexpected.length) {
+      throw new Error(`Unexpected requirement fields: ${unexpected.join(', ')}`)
+    }
+
+    return { and: normalizeRequirementList(value.and, 'requirements.and') }
+  }
+
+  if (hasExplicitOr) {
+    const unexpected = Object.keys(value).filter(
+      (key) => !['or', 'min_commits', 'min_repositories', 'minRepositories'].includes(key),
+    )
+    if (unexpected.length) {
+      throw new Error(`Unexpected requirement fields: ${unexpected.join(', ')}`)
+    }
+
+    return { or: normalizeRequirementList(value.or, 'requirements.or') }
+  }
+
+  const normalized = buildImplicitAndFromShortcuts(value)
+  return { and: normalized }
+}
+
+function normalizeRequirementList(value, location) {
+  if (!Array.isArray(value)) {
+    throw new Error(`Expected array at ${location}`)
+  }
+
+  return value.map((entry, index) => parseRequirementNode(entry, `${location}[${index}]`))
+}
+
+function normalizeShortHandList(values, location) {
+  if (values === undefined) {
+    return []
+  }
+
+  if (Array.isArray(values)) {
+    return values.map((entry, index) => {
+      const text = parseScalarText(entry)
+      if (text === undefined) {
+        throw new Error(`Expected text values for ${location}`)
+      }
+      return text
+    })
+  }
+
+  const text = parseScalarText(values)
+  if (!text) {
+    return []
+  }
+
+  return [text]
+}
+
+function buildImplicitAndFromShortcuts(requirements) {
+  const normalized = []
+  const known = ['and', 'or', 'min_commits', 'min_repositories', 'minRepositories', 'skill', 'loadout', 'agent', 'model']
+
+  for (const skill of normalizeShortHandList(requirements.skill, 'requirements.skill')) {
+    normalized.push({ skill })
+  }
+
+  for (const loadout of normalizeShortHandList(requirements.loadout, 'requirements.loadout')) {
+    normalized.push({ loadout })
+  }
+
+  const hasAgent = Object.prototype.hasOwnProperty.call(requirements, 'agent')
+  const agent = normalizeAgentRequirement(requirements.agent)
+  if (agent) {
+    normalized.push(agent)
+  } else if (hasAgent) {
+    throw new Error('requirements.agent must be an object with a provider')
+  }
+
+  const hasModel = Object.prototype.hasOwnProperty.call(requirements, 'model')
+  const model = normalizeModelRequirement(requirements.model)
+  if (model) {
+    normalized.push(model)
+  } else if (hasModel) {
+    throw new Error('requirements.model must be an object with optional provider and/or name')
+  }
+
+  const unexpected = Object.keys(requirements).filter((key) => !known.includes(key))
+  if (unexpected.length) {
+    throw new Error(`Unexpected requirement fields: ${unexpected.join(', ')}`)
+  }
+
+  return normalized
+}
+
+function parseRequirementNode(value, location) {
+  if (!isObject(value)) {
+    throw new Error(`Invalid requirement node at ${location}`)
+  }
+
+  const keys = Object.keys(value)
+  if (!keys.length) {
+    throw new Error(`Empty requirement node at ${location}`)
+  }
+  if (keys.length > 1) {
+    throw new Error(`Requirement node has multiple keys at ${location}`)
+  }
+
+  const [key] = keys
+
+  if (key === 'and' || key === 'or') {
+    if (!Array.isArray(value[key])) {
+      throw new Error(`Requirement node ${location} expected array for ${key}`)
+    }
+
+    return {
+      [key]: value[key].map((entry, childIndex) => parseRequirementNode(entry, `${location}.${key}[${childIndex}]`)),
+    }
+  }
+
+  if (key === 'skill') {
+    const text = parseScalarText(value[key])
+    if (!text) {
+      throw new Error(`Requirement node ${location} has empty skill`)
+    }
+    return { skill: text }
+  }
+
+  if (key === 'loadout') {
+    const text = parseScalarText(value[key])
+    if (!text) {
+      throw new Error(`Requirement node ${location} has empty loadout`)
+    }
+    return { loadout: text }
+  }
+
+  if (key === 'agent') {
+    const node = normalizeAgentRequirement(value[key])
+    if (!node) {
+      throw new Error(`Requirement node ${location} has invalid agent requirement`)
+    }
+    return node
+  }
+
+  if (key === 'model') {
+    const node = normalizeModelRequirement(value[key])
+    if (!node) {
+      throw new Error(`Requirement node ${location} has invalid model requirement`)
+    }
+    return node
+  }
+
+  throw new Error(`Unexpected requirement key ${key} at ${location}`)
+}
+
+function normalizeAgentRequirement(value) {
+  if (!isObject(value)) {
+    return undefined
+  }
+
+  const provider = parseScalarText(value.provider)
+  if (!provider) {
+    return undefined
+  }
+
+  return {
+    agent: {
+      provider: provider.toLowerCase(),
+    },
+  }
+}
+
+function normalizeModelRequirement(value) {
+  if (!isObject(value)) {
+    return undefined
+  }
+
+  const provider = parseScalarText(value.provider)
+  const name = parseScalarText(value.name)
+
+  if (!provider && !name) {
+    return undefined
+  }
+
+  return {
+    model: {
+      ...(provider ? { provider: provider.toLowerCase() } : {}),
+      ...(name ? { name } : {}),
+    },
   }
 }
 
@@ -384,6 +587,10 @@ function parseScalar(value) {
 
 function isValidIdentifier(value) {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)
+}
+
+function parseScalarText(value) {
+  return typeof value === 'string' ? value.trim() : undefined
 }
 
 function isObject(value) {

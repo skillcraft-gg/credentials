@@ -53,27 +53,43 @@ requirements:
   min_commits: 1
 ```
 
-`requirements.mode` controls whether skill/loadout constraints are evaluated in
-`and` or `or` mode.
+`requirements` is an expression tree using nested `and` / `or` maps.
+
+Top-level shorthand remains supported as an implicit `and` block.
+
+```yaml
+requirements:
+  and:
+    - min_commits: 3
+    - skill: blairhudson/threat-model
+    - loadout: blairhudson/secure-dev
+    - agent:
+        provider: opencode
+    - model:
+        provider: openai
+        name: gpt-4o
+```
+
+Equivalent implicit shorthand:
 
 ```yaml
 requirements:
   min_commits: 3
-  mode: and | or
   skill:
     - blairhudson/threat-model
     - skillcraft-gg/code-review
-  loadout:
-    - blairhudson/secure-dev
-
-images:
-  credential: credential.png
-  background: background.png
+  loadout: blairhudson/secure-dev
 ```
 
-- `mode: and` means all declared skill/loadout requirements must be met.
-- `mode: or` means at least one declared requirement must be met.
-- If no skill or loadout requirements are declared, validation is only `min_commits`.
+- `and` requires every nested requirement to pass.
+- `or` requires at least one nested requirement to pass.
+- `agent` is required when proven proofs must carry matching `agent.provider`.
+- `model` is required when proven proofs must carry matching `model.provider` and/or `model.name`.
+- `min_repositories` enforces unique proof source repository count.
+- If only `min_commits` or `min_repositories` are specified, proofs are checked only by count.
+
+`images.credential` and `images.background` are optional and resolved relative to
+the credential definition folder.
 
 `images.credential` and `images.background` are optional and resolved relative to
 the credential definition folder.
@@ -105,7 +121,7 @@ GitHub Actions verifies:
 - claim format and target credential definition
 - repository access and commit existence
 - proof object availability for claimed commits
-- requirement checks using configured mode (`and`/`or`)
+- requirement checks using nested `and`/`or` expressions and optional provenance rules (`agent`, `model`, `min_repositories`)
 
 On success, issue labels are set to `skillcraft-verified` and `skillcraft-issued`
 and an issued credential is written.

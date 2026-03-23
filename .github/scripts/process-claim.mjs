@@ -59,12 +59,7 @@ async function runClaimProcessing() {
     const requirements = normalizeRequirements(definition.requirements)
     const checks = await validateClaimEvidence(payload.sources, payload.claimant.github)
 
-    const result = evaluateRequirements(checks.proofs, checks.provenCommits, requirements)
-
-    if (checks.provenCommits.length < requirements.minCommits) {
-      result.reasons.push(`minimum required commits not met: have ${checks.provenCommits.length}, need ${requirements.minCommits}`)
-      result.passed = false
-    }
+    const result = evaluateRequirements(checks.proofs, checks.provenCommits, checks.provenRepos, requirements)
 
     if (!result.passed) {
       await setIssueState(issue.number, targetRepo, {
@@ -176,15 +171,227 @@ async function loadCredentialDefinition(id) {
   }
 }
 
-function normalizeRequirements(value) {
+export function normalizeRequirements(value) {
   const requirements = isObject(value) ? value : {}
+
+  if (requirements.mode !== undefined) {
+    throw new Error('requirements.mode is not supported. Use nested and/or expressions instead.')
+  }
+
+  const requirementTree = normalizeRequirementRoot(requirements)
 
   return {
     minCommits: normalizeNonNegativeInteger(requirements.min_commits, 0),
-    mode: requirements.mode === 'or' ? 'or' : 'and',
-    skill: normalizeStringList(requirements.skill),
-    loadout: normalizeStringList(requirements.loadout),
+    minRepositories: normalizeNonNegativeInteger(requirements.min_repositories ?? requirements.minRepositories, 0),
+    tree: requirementTree,
   }
+}
+
+function normalizeRequirementRoot(value) {
+  const hasExplicitAnd = Object.prototype.hasOwnProperty.call(value, 'and')
+  const hasExplicitOr = Object.prototype.hasOwnProperty.call(value, 'or')
+
+  if (hasExplicitAnd && hasExplicitOr) {
+    throw new Error('requirements cannot include both and and or at the same level')
+  }
+
+  if (hasExplicitAnd) {
+    const unexpected = Object.keys(value).filter(
+      (key) => !['and', 'min_commits', 'min_repositories', 'minRepositories'].includes(key),
+    )
+    if (unexpected.length) {
+      throw new Error(`Unexpected requirement fields: ${unexpected.join(', ')}`)
+    }
+
+    return {
+      and: normalizeRequirementList(value.and, 'requirements.and'),
+    }
+  }
+
+  if (hasExplicitOr) {
+    const unexpected = Object.keys(value).filter(
+      (key) => !['or', 'min_commits', 'min_repositories', 'minRepositories'].includes(key),
+    )
+    if (unexpected.length) {
+      throw new Error(`Unexpected requirement fields: ${unexpected.join(', ')}`)
+    }
+
+    return {
+      or: normalizeRequirementList(value.or, 'requirements.or'),
+    }
+  }
+
+  const normalizedShortHand = buildImplicitAndFromShortcuts(value)
+
+  return { and: normalizedShortHand }
+}
+
+function normalizeRequirementList(value, location) {
+  if (!Array.isArray(value)) {
+    throw new Error(`Expected array at ${location}`)
+  }
+
+  return value.map((entry, index) => parseRequirementNode(entry, `${location}[${index}]`))
+}
+
+function normalizeShortHandList(values, location) {
+  if (values === undefined) {
+    return []
+  }
+
+  if (Array.isArray(values)) {
+    return values.map((entry) => {
+      const text = parseScalarText(entry)
+      if (text === undefined) {
+        throw new Error(`Expected text values for ${location}`)
+      }
+      return text
+    })
+  }
+
+  const text = parseScalarText(values)
+  if (!text) {
+    return []
+  }
+
+  return [text]
+}
+
+function buildImplicitAndFromShortcuts(requirements) {
+  const normalized = []
+  const known = ['and', 'or', 'min_commits', 'min_repositories', 'minRepositories', 'skill', 'loadout', 'agent', 'model']
+
+  for (const skill of normalizeShortHandList(requirements.skill, 'requirements.skill')) {
+    normalized.push({ skill })
+  }
+
+  for (const loadout of normalizeShortHandList(requirements.loadout, 'requirements.loadout')) {
+    normalized.push({ loadout })
+  }
+
+  const hasAgent = Object.prototype.hasOwnProperty.call(requirements, 'agent')
+  const agent = normalizeAgentRequirement(requirements.agent)
+  if (agent) {
+    normalized.push(agent)
+  } else if (hasAgent) {
+    throw new Error('requirements.agent must be an object with a provider')
+  }
+
+  const hasModel = Object.prototype.hasOwnProperty.call(requirements, 'model')
+  const model = normalizeModelRequirement(requirements.model)
+  if (model) {
+    normalized.push(model)
+  } else if (hasModel) {
+    throw new Error('requirements.model must be an object with optional provider and/or name')
+  }
+
+  const nested = Object.keys(requirements).filter((key) => !known.includes(key) && !key.startsWith('$'))
+  if (nested.length) {
+    throw new Error(`Unexpected requirement fields: ${nested.join(', ')}`)
+  }
+
+  return normalized
+}
+
+function parseRequirementNode(value, location) {
+  if (!isObject(value)) {
+    throw new Error(`Invalid requirement node at ${location}`)
+  }
+
+  const keys = Object.keys(value)
+  if (!keys.length) {
+    throw new Error(`Empty requirement node at ${location}`)
+  }
+  if (keys.length > 1) {
+    throw new Error(`Requirement node has multiple keys at ${location}`)
+  }
+
+  const [key] = keys
+
+  if (key === 'and' || key === 'or') {
+    if (!Array.isArray(value[key])) {
+      throw new Error(`Requirement node ${location} expected array for ${key}`)
+    }
+
+    return {
+      [key]: value[key].map((entry, childIndex) => parseRequirementNode(entry, `${location}.${key}[${childIndex}]`)),
+    }
+  }
+
+  if (key === 'skill') {
+    const text = parseScalarText(value[key])
+    if (!text) {
+      throw new Error(`Requirement node ${location} has empty skill`) 
+    }
+    return { skill: text }
+  }
+
+  if (key === 'loadout') {
+    const text = parseScalarText(value[key])
+    if (!text) {
+      throw new Error(`Requirement node ${location} has empty loadout`) 
+    }
+    return { loadout: text }
+  }
+
+  if (key === 'agent') {
+    const node = normalizeAgentRequirement(value[key])
+    if (!node) {
+      throw new Error(`Requirement node ${location} has invalid agent requirement`)
+    }
+    return node
+  }
+
+  if (key === 'model') {
+    const node = normalizeModelRequirement(value[key])
+    if (!node) {
+      throw new Error(`Requirement node ${location} has invalid model requirement`)
+    }
+    return node
+  }
+
+  throw new Error(`Unexpected requirement key ${key} at ${location}`)
+}
+
+function normalizeAgentRequirement(value) {
+  if (!isObject(value)) {
+    return undefined
+  }
+
+  const provider = parseScalarText(value.provider)
+  if (!provider) {
+    return undefined
+  }
+
+  return {
+    agent: {
+      provider: provider.toLowerCase(),
+    },
+  }
+}
+
+function normalizeModelRequirement(value) {
+  if (!isObject(value)) {
+    return undefined
+  }
+
+  const provider = parseScalarText(value.provider)
+  const name = parseScalarText(value.name)
+
+  if (!provider && !name) {
+    return undefined
+  }
+
+  return {
+    model: {
+      ...(provider ? { provider: provider.toLowerCase() } : {}),
+      ...(name ? { name } : {}),
+    },
+  }
+}
+
+function parseScalarText(value) {
+  return typeof value === 'string' ? value.trim() : undefined
 }
 
 function normalizeSources(value) {
@@ -247,6 +454,7 @@ async function validateClaimEvidence(sources, claimant) {
   }
 
   const provenCommits = []
+  const provenRepos = new Set()
   const proofs = []
 
   for (const source of sources) {
@@ -272,6 +480,7 @@ async function validateClaimEvidence(sources, claimant) {
         }
 
         provenCommits.push(normalizedCommit)
+        provenRepos.add(normalizeRepoUrl(source.repo))
         proofs.push({
           source: source.repo,
           commit: normalizedCommit,
@@ -285,6 +494,7 @@ async function validateClaimEvidence(sources, claimant) {
 
   return {
     provenCommits: Array.from(new Set(provenCommits)),
+    provenRepos: Array.from(provenRepos).filter(Boolean),
     proofs,
     claimant,
   }
@@ -370,18 +580,51 @@ function normalizeProof(value) {
       .map((entry) => normalizeText(entry))
       .filter(Boolean),
     timestamp: value.timestamp,
+    agent: normalizeProofAgent(value.agent),
+    model: normalizeProofModel(value.model),
   }
 }
 
-function evaluateRequirements(proofs, provenCommits, requirements) {
+function normalizeProofAgent(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+
+  const provider = normalizeText(value.provider)
+  return provider ? { provider: provider.toLowerCase() } : undefined
+}
+
+function normalizeProofModel(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+
+  const provider = normalizeText(value.provider)
+  const name = normalizeText(value.name)
+
+  if (!provider && !name) {
+    return undefined
+  }
+
+  return {
+    ...(provider ? { provider: provider.toLowerCase() } : {}),
+    ...(name ? { name } : {}),
+  }
+}
+
+export function evaluateRequirements(proofs, provenCommits, provenRepos, requirements) {
   const proofSkills = []
   const proofLoadouts = []
+  const proofAgents = []
+  const proofModels = []
+  const dedupedCommits = Array.from(new Set((provenCommits || []).filter(Boolean)))
+  const dedupedRepos = Array.from(new Set((provenRepos || []).filter(Boolean)))
 
   for (const proof of proofs) {
     for (const skill of proof.proof.skills) {
-      const normalized = parseIdentifierWithVersion(skill.id)
-      if (normalized.id) {
-        proofSkills.push({ id: normalized.id, version: normalized.version })
+      const parsed = parseIdentifierWithVersion(skill.id)
+      if (parsed.id) {
+        proofSkills.push({ id: parsed.id, version: parsed.version })
       }
     }
 
@@ -391,46 +634,142 @@ function evaluateRequirements(proofs, provenCommits, requirements) {
         proofLoadouts.push(normalized)
       }
     }
+
+    if (proof.proof.agent?.provider && typeof proof.proof.agent.provider === 'string') {
+      proofAgents.push(proof.proof.agent.provider)
+    }
+
+    const modelProvider = proof.proof.model?.provider
+    const modelName = proof.proof.model?.name
+    if (typeof modelProvider === 'string' || typeof modelName === 'string') {
+      proofModels.push({ provider: modelProvider, name: modelName })
+    }
   }
 
-  const requirementsChecks = []
-  for (const requirement of requirements.skill) {
-    const parsed = parseIdentifierWithVersion(requirement)
-    requirementsChecks.push({
-      type: 'skill',
-      requirement,
-      satisfied: proofSkills.some((skill) => matchesId(skill.id, skill.version, parsed)),
-    })
+  const requirementResult = evaluateRequirementTree(requirements.tree, {
+    skills: proofSkills,
+    loadouts: proofLoadouts,
+    agents: proofAgents,
+    models: proofModels,
+  })
+
+  const checks = requirementResult.checks
+  const resultReasons = [...failedRequirementReasons(checks)]
+
+  if (requirements.minCommits > dedupedCommits.length) {
+    resultReasons.push(`minimum required commits not met: have ${dedupedCommits.length}, need ${requirements.minCommits}`)
+    requirementResult.passed = false
   }
 
-  for (const requirement of requirements.loadout) {
-    const parsed = parseIdentifierWithVersion(requirement)
-    requirementsChecks.push({
-      type: 'loadout',
-      requirement,
-      satisfied: proofLoadouts.includes(requirement) || proofLoadouts.includes(parsed.id),
-    })
-  }
-
-  const checks = requirementsChecks.filter(Boolean)
-  const noExplicitChecks = checks.length === 0
-  let passed
-  if (noExplicitChecks) {
-    passed = true
-  } else if (requirements.mode === 'or') {
-    passed = checks.some((entry) => entry.satisfied)
-  } else {
-    passed = checks.every((entry) => entry.satisfied)
+  if (requirements.minRepositories > dedupedRepos.length) {
+    resultReasons.push(`minimum required repositories not met: have ${dedupedRepos.length}, need ${requirements.minRepositories}`)
+    requirementResult.passed = false
   }
 
   return {
-    passed,
+    passed: requirementResult.passed,
     proofs,
-    provenCommits,
+    provenCommits: dedupedCommits,
+    provenRepos: dedupedRepos,
     checks,
-    reasons: !passed ? failedRequirementReasons(checks) : [],
-    noExplicitChecks,
+    reasons: resultReasons,
+    noExplicitChecks: requirementResult.noExplicitChecks,
   }
+}
+
+function evaluateRequirementTree(node, context) {
+  if (node.and) {
+    const checks = []
+    const childResults = []
+    let noExplicitChecks = true
+    for (const child of node.and) {
+      const childResult = evaluateRequirementTree(child, context)
+      checks.push(...childResult.checks)
+      childResults.push(childResult)
+      if (!childResult.noExplicitChecks) {
+        noExplicitChecks = false
+      }
+    }
+
+    return {
+      passed: childResults.every((entry) => entry.passed),
+      checks,
+      noExplicitChecks,
+    }
+  }
+
+  if (node.or) {
+    const checks = []
+    const childResults = []
+    let noExplicitChecks = true
+    for (const child of node.or) {
+      const childResult = evaluateRequirementTree(child, context)
+      checks.push(...childResult.checks)
+      childResults.push(childResult)
+      if (!childResult.noExplicitChecks) {
+        noExplicitChecks = false
+      }
+    }
+
+    return {
+      passed: childResults.some((entry) => entry.passed),
+      checks,
+      noExplicitChecks,
+    }
+  }
+
+  if (node.skill) {
+    const parsed = parseIdentifierWithVersion(node.skill)
+    return {
+      passed: proofSkillsMatch(context.skills, parsed),
+      checks: [{ type: 'skill', requirement: node.skill, satisfied: proofSkillsMatch(context.skills, parsed) }],
+      noExplicitChecks: false,
+    }
+  }
+
+  if (node.loadout) {
+    const parsed = parseTextRequirement(node.loadout)
+    return {
+      passed: context.loadouts.includes(node.loadout) || (parsed && context.loadouts.includes(parsed.id)),
+      checks: [{ type: 'loadout', requirement: node.loadout, satisfied: context.loadouts.includes(node.loadout) || (parsed && context.loadouts.includes(parsed.id)) }],
+      noExplicitChecks: false,
+    }
+  }
+
+  if (node.agent) {
+    const expectedProvider = normalizeRequirementText(node.agent.provider)
+    return {
+      passed: context.agents.some((provider) => provider === expectedProvider),
+      checks: [{ type: 'agent', requirement: `provider=${expectedProvider}`, satisfied: context.agents.some((provider) => provider === expectedProvider) }],
+      noExplicitChecks: false,
+    }
+  }
+
+  if (node.model) {
+    const expectedProvider = normalizeRequirementText(node.model.provider)
+    const expectedName = normalizeRequirementText(node.model.name)
+    const isSatisfied = context.models.some((candidate) => {
+      const matchProvider = !expectedProvider || candidate.provider === expectedProvider
+      const matchName = !expectedName || (candidate.name && candidate.name === expectedName)
+      return matchProvider && matchName
+    })
+
+    const requirementParts = []
+    if (expectedProvider) {
+      requirementParts.push(`provider=${expectedProvider}`)
+    }
+    if (expectedName) {
+      requirementParts.push(`name=${expectedName}`)
+    }
+
+    return {
+      passed: isSatisfied,
+      checks: [{ type: 'model', requirement: requirementParts.join(',') || 'model', satisfied: isSatisfied }],
+      noExplicitChecks: false,
+    }
+  }
+
+  throw new Error('Unknown requirement node encountered during evaluation')
 }
 
 function matchesId(actualId, actualVersion, expected) {
@@ -443,6 +782,18 @@ function matchesId(actualId, actualVersion, expected) {
   }
 
   return actualVersion === expected.version
+}
+
+function parseTextRequirement(value) {
+  return parseIdentifierWithVersion(value)
+}
+
+function normalizeRequirementText(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function proofSkillsMatch(proofSkills, parsed) {
+  return proofSkills.some((skill) => matchesId(skill.id, skill.version, parsed))
 }
 
 function failedRequirementReasons(checks) {
@@ -515,8 +866,8 @@ function buildRejectionComment(id, requirements, result) {
     lines.push('')
   }
 
-  lines.push('Requirement mode: `' + requirements.mode + '`')
   lines.push(`Required min commits: ${requirements.minCommits}`)
+  lines.push(`Required min repositories: ${requirements.minRepositories || 0}`)
   return lines.join('\n')
 }
 
