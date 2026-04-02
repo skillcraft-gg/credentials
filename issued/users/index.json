@@ -7,12 +7,18 @@
         "definition": "skillcraft-gg/hello-world",
         "issuedAt": "2026-04-02T10:18:15.003Z",
         "path": "issued/users/blairhudson/skillcraft-gg/hello-world",
-        "claimId": "sha256:f6bc3c94",
+        "claimId": "sha256:14bb2b61",
+        "sources": [
+          {
+            "repo": "skillcraft-gg/skillcraft",
+            "commits": [
+              "b55fce79a34a3fe3f4461417583b9d3e821432a3",
+              "ffd4a3b333bb9c9d398b566765483db2ccad2977"
+            ]
+          }
+        ],
         "sourceCommits": [
-          "4a508f46725868302560809d3963af3ac9e628d2",
-          "6f81a04eae8e0771a591b60417b915629e80333e",
           "b55fce79a34a3fe3f4461417583b9d3e821432a3",
-          "365cb65fd3cd519555efad32997fd6bfb7ceeed6",
           "ffd4a3b333bb9c9d398b566765483db2ccad2977"
         ],
         "subject": {

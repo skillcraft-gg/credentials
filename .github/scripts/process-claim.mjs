@@ -98,7 +98,7 @@ async function runClaimProcessing() {
       return
     }
 
-    const issuedPath = await writeIssuedCredential(payload, definition, checks.provenCommits)
+    const issuedPath = await writeIssuedCredential(payload, definition, checks)
 
     const updated = await buildIndexes()
 
@@ -934,6 +934,7 @@ async function writeIssuedCredential(payload, definition, provenCommits) {
 
   const outPath = path.join(outDir, 'credential.yaml')
   const issuedAt = new Date().toISOString()
+  const verifiedSources = buildVerifiedSourcesFromProofs(provenCommits)
 
   const lines = []
   lines.push(`definition: ${definition.id}`)
@@ -943,13 +944,51 @@ async function writeIssuedCredential(payload, definition, provenCommits) {
   if (payload.claim_id) {
     lines.push(`claim_id: ${payload.claim_id}`)
   }
+  if (verifiedSources.length > 0) {
+    lines.push('sources:')
+    for (const source of verifiedSources) {
+      lines.push(`  - repo: ${source.repo}`)
+      lines.push('    commits:')
+      for (const commit of source.commits) {
+        lines.push(`      - ${commit}`)
+      }
+    }
+  }
   lines.push('source_commits:')
-  for (const commit of provenCommits) {
+  for (const commit of provenCommits?.provenCommits || provenCommits) {
     lines.push(`  - ${commit}`)
   }
 
   await fs.writeFile(outPath, `${lines.join('\n')}\n`, 'utf8')
   return outPath
+}
+
+function buildVerifiedSourcesFromProofs(result) {
+  const proofs = Array.isArray(result?.proofs) ? result.proofs : []
+  const repositoryMap = new Map()
+
+  for (const proof of proofs) {
+    if (!proof || typeof proof !== 'object') {
+      continue
+    }
+
+    const repo = normalizeRepoUrl(proof.source)
+    const commit = normalizeText(proof.commit)
+    if (!repo || !commit) {
+      continue
+    }
+
+    const existing = repositoryMap.get(repo) || []
+    existing.push(commit)
+    repositoryMap.set(repo, existing)
+  }
+
+  return Array.from(repositoryMap.entries())
+    .map(([repo, commits]) => ({
+      repo: repo.replace(/\.git$/i, ''),
+      commits: Array.from(new Set(commits.filter(Boolean).map((entry) => String(entry).trim()))).sort(),
+    }))
+    .filter((entry) => entry.repo && entry.commits.length > 0)
 }
 
 async function buildIndexes() {

@@ -1,6 +1,11 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeRequirements } from './build-credentials-index.mjs'
+import {
+  normalizeRequirements,
+  normalizeSourceRepo,
+  normalizeSources,
+  resolveSourceCommits,
+} from './build-credentials-index.mjs'
 
 describe('build-credentials-index requirement normalization', () => {
   test('rejects requirements.mode', () => {
@@ -87,5 +92,39 @@ describe('build-credentials-index requirement normalization', () => {
         { model: { provider: 'openai', name: 'gpt-4o' } },
       ],
     })
+  })
+})
+
+describe('build-credentials-index source normalization', () => {
+  test('normalizes repository identifiers from common URL formats', () => {
+    assert.equal(normalizeSourceRepo('https://github.com/acme/team.git'), 'acme/team')
+    assert.equal(normalizeSourceRepo('git@github.com:acme/team.git'), 'acme/team')
+    assert.equal(normalizeSourceRepo('acme/team'), 'acme/team')
+    assert.equal(normalizeSourceRepo('https://github.com/Acme/TEAM.git/'), 'acme/team')
+  })
+
+  test('normalizes source entries and deduplicates per repo', () => {
+    const sources = normalizeSources([
+      { repo: 'https://github.com/acme/team', commits: ['abc', 'def', 'abc'] },
+      { repo: 'git@github.com:acme/team', commits: ['DEF', ''] },
+      { repo: 'Acme/Other', commits: ['123'] },
+      { repo: 'bad-repo', commits: ['ignored'] },
+    ])
+
+    assert.deepStrictEqual(sources, [
+      { repo: 'acme/team', commits: ['abc', 'def', 'DEF'] },
+      { repo: 'acme/other', commits: ['123'] },
+    ])
+  })
+
+  test('unifies commit hashes from source arrays and legacy source_commit list', () => {
+    const parsed = {
+      source_commits: ['aaa', 'bbb', 'AAA'],
+      sources: [
+        { repo: 'acme/team', commits: ['bbb', 'ccc'] },
+      ],
+    }
+
+    assert.deepStrictEqual(resolveSourceCommits(parsed), ['aaa', 'bbb', 'AAA', 'ccc'])
   })
 })

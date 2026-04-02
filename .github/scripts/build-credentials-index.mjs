@@ -96,11 +96,8 @@ async function scanIssuedCredentials() {
           issuedAt: String(parsed.issued_at || parsed.issuedAt || '').trim(),
           path: path.posix.join('issued', 'users', github, owner, slug, ''),
           claimId: String(parsed.claim_id || '').trim() || undefined,
-          sourceCommits: Array.isArray(parsed.source_commits)
-            ? normalizeStringList(parsed.source_commits)
-            : Array.isArray(parsed.sourceCommits)
-              ? normalizeStringList(parsed.sourceCommits)
-              : [],
+          sources: normalizeSources(parsed.sources || parsed.sourceSources),
+          sourceCommits: resolveSourceCommits(parsed),
           subject: parsed.subject || { github },
         }
 
@@ -394,6 +391,78 @@ function normalizeStringList(value) {
   }
 
   return value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+}
+
+export function normalizeSourceRepo(value) {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized) {
+    return ''
+  }
+
+  const cleaned = normalized
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/^git@github\.com:/i, '')
+    .replace(/\/+$/g, '')
+    .replace(/\.git$/i, '')
+
+  if (!/^[a-z0-9-_.]+\/[a-z0-9-_.]+$/i.test(cleaned)) {
+    return ''
+  }
+
+  return cleaned.toLowerCase()
+}
+
+export function normalizeSources(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const grouped = new Map()
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue
+    }
+
+    const repo = normalizeSourceRepo(entry.repo)
+    if (!repo) {
+      continue
+    }
+
+    const commits = Array.isArray(entry.commits)
+      ? entry.commits.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+      : []
+
+    if (!commits.length) {
+      continue
+    }
+
+    const existing = grouped.get(repo) || []
+    grouped.set(repo, existing.concat(commits))
+  }
+
+  return Array.from(grouped.entries())
+    .map(([repo, commits]) => ({
+      repo,
+      commits: Array.from(new Set(commits.map((entry) => String(entry).trim()).filter(Boolean))),
+    }))
+    .filter((entry) => entry.repo && entry.commits.length > 0)
+}
+
+export function resolveSourceCommits(parsed) {
+  const fromSourceCommits = Array.isArray(parsed.source_commits)
+    ? normalizeStringList(parsed.source_commits)
+    : Array.isArray(parsed.sourceCommits)
+      ? normalizeStringList(parsed.sourceCommits)
+      : []
+
+  const sources = normalizeSources(parsed.sources || parsed.sourceSources)
+  const fromSources = sources.flatMap((entry) => entry.commits)
+
+  return Array.from(new Set([
+    ...fromSourceCommits,
+    ...fromSources,
+  ].filter(Boolean)))
 }
 
 function normalizeNonNegativeInteger(value, fallback) {
