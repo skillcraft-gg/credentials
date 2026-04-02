@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { evaluateRequirements, normalizeRequirements } from './process-claim.mjs'
+import { evaluateRequirements, normalizeRequirements, parseClaimPayload } from './process-claim.mjs'
 
 function proof(overrides = {}) {
   return {
@@ -135,5 +135,39 @@ describe('process-claim requirement parsing and enforcement', () => {
     assert.equal(oneRepo.passed, false)
     assert.ok(oneRepo.reasons.includes('minimum required repositories not met: have 1, need 2'))
     assert.equal(twoRepos.passed, true)
+  })
+})
+
+describe('process-claim payload parsing', () => {
+  test('parses required claimant and credential id from issue body', () => {
+    const payload = parseClaimPayload({
+      body: `claim_version: 2\nclaimant:\n  github: blairhudson\ncredential:\n  id: skillcraft-gg/hello-world\nsources:\n  - repo: https://github.com/blairhudson/project-a\n    commits:\n      - abc123\nclaim_id: sha256:12345`,
+    })
+
+    assert.equal(payload.claimant.github, 'blairhudson')
+    assert.equal(payload.credential.id, 'skillcraft-gg/hello-world')
+    assert.equal(payload.claim_version, 2)
+    assert.equal(payload.claim_id, 'sha256:12345')
+    assert.equal(payload.sources.length, 1)
+    assert.equal(payload.sources[0].repo, 'https://github.com/blairhudson/project-a')
+    assert.deepStrictEqual(payload.sources[0].commits, ['abc123'])
+  })
+
+  test('accepts legacy credential string shorthand', () => {
+    const payload = parseClaimPayload({
+      body: `claimant:\n  github: blairhudson\ncredential: skillcraft-gg/hello-world`,
+    })
+
+    assert.equal(payload.credential.id, 'skillcraft-gg/hello-world')
+    assert.equal(payload.claim_version, 1)
+  })
+
+  test('rejects payload without credential id', () => {
+    assert.throws(
+      () => parseClaimPayload({
+        body: 'claimant:\n  github: blairhudson\n',
+      }),
+      /claim payload missing credential.id/,
+    )
   })
 })

@@ -36,6 +36,9 @@ async function runClaimProcessing() {
   let payload
   try {
     payload = parseClaimPayload(issue)
+    if (!payload?.credential?.id) {
+      throw new Error('claim payload missing credential.id')
+    }
   } catch (error) {
     await setIssueState(issue.number, targetRepo, {
       add: [LABEL_REJECTED],
@@ -106,7 +109,7 @@ if (process.argv[1] && process.argv[1] === new URL(import.meta.url).pathname) {
   await runClaimProcessing()
 }
 
-async function parseClaimPayload(issue) {
+export function parseClaimPayload(issue) {
   const parsed = parseYaml(String(issue.body || '').trim())
 
   if (!isObject(parsed)) {
@@ -114,12 +117,12 @@ async function parseClaimPayload(issue) {
   }
 
   const claimant = isObject(parsed.claimant) ? parsed.claimant : undefined
-  const credential = isObject(parsed.credential) ? parsed.credential : undefined
+  const credential = parsed.credential
   if (!claimant?.github || typeof claimant.github !== 'string') {
     throw new Error('claim payload missing claimant.github')
   }
 
-  const credentialId = normalizeText(credential?.id)
+  const credentialId = normalizeText(isObject(credential) ? credential.id : normalizeText(credential))
   if (!credentialId) {
     throw new Error('claim payload missing credential.id')
   }
