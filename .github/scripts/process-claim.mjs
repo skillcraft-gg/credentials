@@ -59,6 +59,26 @@ async function runClaimProcessing() {
 
   try {
     const definition = await loadCredentialDefinition(payload.credential.id)
+
+    const claimant = normalizeClaimant(payload.claimant.github)
+    payload.claimant.github = claimant
+
+    if (await isCredentialAlreadyIssued(claimant, definition)) {
+      const issuedPath = getIssuedCredentialPath(claimant, definition)
+
+      await setIssueState(issue.number, targetRepo, {
+        add: [LABEL_REJECTED],
+        remove: [LABEL_VERIFIED, LABEL_ISSUED],
+      })
+      await postComment(
+        issue.number,
+        targetRepo,
+        buildAlreadyIssuedComment(payload.credential.id, definition, issuedPath),
+      )
+      await closeIssue(issue.number, targetRepo, 'not_planned')
+      return
+    }
+
     const requirements = normalizeRequirements(definition.requirements)
     const checks = await validateClaimEvidence(payload.sources, payload.claimant.github)
 
@@ -106,6 +126,67 @@ async function runClaimProcessing() {
       remove: [LABEL_PROCESSING],
     })
   }
+}
+
+function normalizeClaimant(value) {
+  return normalizeText(value).toLowerCase()
+}
+
+function getIssuedCredentialPath(claimant, definition) {
+  const owner = normalizeText(definition?.owner)
+  const slug = normalizeText(definition?.slug)
+  return path.join('issued', 'users', normalizeText(claimant), owner || 'unknown', slug || 'unknown', 'credential.yaml')
+}
+
+async function isCredentialAlreadyIssued(claimant, definition) {
+  const normalizedClaimant = normalizeClaimant(claimant)
+
+  const canonicalPath = getIssuedCredentialPath(normalizedClaimant, definition)
+  if (await fileExists(canonicalPath)) {
+    return true
+  }
+
+  const rawPath = path.join('issued', 'users', normalizeText(claimant), normalizeText(definition?.owner), normalizeText(definition?.slug), 'credential.yaml')
+  if (rawPath !== canonicalPath && await fileExists(rawPath)) {
+    return true
+  }
+
+  return isCredentialInIssuedIndex(normalizedClaimant, definition?.id)
+}
+
+async function isCredentialInIssuedIndex(claimant, definitionId) {
+  const normalizedClaimant = normalizeClaimant(claimant)
+  const targetCredential = normalizeText(definitionId)
+  if (!normalizedClaimant || !targetCredential) {
+    return false
+  }
+
+  let raw
+  try {
+    raw = await fs.readFile(path.join('issued', 'users', 'index.json'), 'utf8')
+  } catch {
+    return false
+  }
+
+  let entries
+  try {
+    entries = JSON.parse(raw)
+  } catch {
+    return false
+  }
+
+  if (!Array.isArray(entries)) {
+    return false
+  }
+
+  return entries.some((entry) => {
+    const sameUser = normalizeClaimant(entry?.github) === normalizedClaimant
+    if (!sameUser || !Array.isArray(entry?.credentials)) {
+      return false
+    }
+
+    return entry.credentials.some((credential) => normalizeText(credential?.definition) === targetCredential)
+  })
 }
 
 if (process.argv[1] && process.argv[1] === new URL(import.meta.url).pathname) {
@@ -842,7 +923,13 @@ function parseIdentifierWithVersion(value) {
 }
 
 async function writeIssuedCredential(payload, definition, provenCommits) {
-  const outDir = path.join('issued', 'users', payload.claimant.github, definition.owner, definition.slug)
+  const outDir = path.join(
+    'issued',
+    'users',
+    normalizeClaimant(payload.claimant.github),
+    normalizeText(definition.owner) || 'unknown',
+    normalizeText(definition.slug) || 'unknown',
+  )
   await fs.mkdir(outDir, { recursive: true })
 
   const outPath = path.join(outDir, 'credential.yaml')
@@ -903,6 +990,17 @@ function buildRejectionComment(id, requirements, result) {
   return lines.join('\n')
 }
 
+function buildAlreadyIssuedComment(id, definition, issuedPath) {
+  const lines = []
+  lines.push(`⚠️ Claim for ${id} was already issued.`)
+  lines.push('No action was taken.')
+  if (issuedPath) {
+    lines.push(`Existing credential path: ${issuedPath}`)
+  }
+  lines.push(`Definition: ${definition?.id || id}`)
+  return lines.join('\n')
+}
+
 function hasLabel(labels, name) {
   return (labels || []).some((label) => {
     const labelName = typeof label === 'string' ? label : label?.name
@@ -929,6 +1027,15 @@ async function setIssueState(issueNumber, repo, { add = [], remove = [] } = {}) 
 async function postComment(issueNumber, repo, body) {
   const cleaned = String(body || '').slice(0, 65000)
   await runGh(['issue', 'comment', String(issueNumber), '--repo', repo, '--body', cleaned])
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function closeIssue(issueNumber, repo, reason = 'completed') {
