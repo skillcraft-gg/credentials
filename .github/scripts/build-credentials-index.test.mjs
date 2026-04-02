@@ -29,6 +29,28 @@ describe('build-credentials-index requirement normalization', () => {
     })
   })
 
+  test('supports already-normalized canonical requirements', () => {
+    const requirements = normalizeRequirements({
+      minCommits: 2,
+      minRepositories: 3,
+      tree: {
+        and: [
+          { loadout: 'team/dev' },
+          { agent: { provider: 'OpenCode' } },
+        ],
+      },
+    })
+
+    assert.equal(requirements.minCommits, 2)
+    assert.equal(requirements.minRepositories, 3)
+    assert.deepStrictEqual(requirements.tree, {
+      and: [
+        { loadout: 'team/dev' },
+        { agent: { provider: 'OpenCode' } },
+      ],
+    })
+  })
+
   test('supports nested explicit and/or nodes', () => {
     const requirements = normalizeRequirements({
       and: [

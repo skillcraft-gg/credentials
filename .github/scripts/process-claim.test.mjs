@@ -43,6 +43,28 @@ describe('process-claim requirement parsing and enforcement', () => {
     })
   })
 
+  test('supports already-normalized canonical requirements', () => {
+    const requirements = normalizeRequirements({
+      minCommits: 2,
+      minRepositories: 3,
+      tree: {
+        or: [
+          { skill: 'acme/skill-a' },
+          { model: { provider: 'OpenAI', name: 'gpt-4o' } },
+        ],
+      },
+    })
+
+    assert.equal(requirements.minCommits, 2)
+    assert.equal(requirements.minRepositories, 3)
+    assert.deepStrictEqual(requirements.tree, {
+      or: [
+        { skill: 'acme/skill-a' },
+        { model: { provider: 'OpenAI', name: 'gpt-4o' } },
+      ],
+    })
+  })
+
   test('evaluates nested and/or requirements', () => {
     const requirements = normalizeRequirements({
       min_commits: 2,

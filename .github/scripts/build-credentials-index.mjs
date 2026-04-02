@@ -130,6 +130,10 @@ async function scanIssuedCredentials() {
 export function normalizeRequirements(value) {
   const requirements = isObject(value) ? value : {}
 
+  if (Object.prototype.hasOwnProperty.call(requirements, 'tree')) {
+    return normalizeNormalizedRequirements(requirements)
+  }
+
   if (requirements.mode !== undefined) {
     throw new Error('requirements.mode is not supported. Use nested and/or expressions instead.')
   }
@@ -140,6 +144,25 @@ export function normalizeRequirements(value) {
     minCommits: normalizeNonNegativeInteger(requirements.min_commits, 0),
     minRepositories: normalizeNonNegativeInteger(requirements.min_repositories ?? requirements.minRepositories, 0),
     tree,
+  }
+}
+
+function normalizeNormalizedRequirements(value) {
+  if (!isObject(value.tree)) {
+    throw new Error('requirements.tree must be an object when provided')
+  }
+
+  const unexpected = Object.keys(value).filter(
+    (key) => !['and', 'or', 'min_commits', 'min_repositories', 'minCommits', 'minRepositories', 'tree'].includes(key),
+  )
+  if (unexpected.length) {
+    throw new Error(`Unexpected requirement fields: ${unexpected.join(', ')}`)
+  }
+
+  return {
+    minCommits: normalizeNonNegativeInteger(value.minCommits, normalizeNonNegativeInteger(value.min_commits, 0)),
+    minRepositories: normalizeNonNegativeInteger(value.minRepositories, normalizeNonNegativeInteger(value.min_repositories, 0)),
+    tree: value.tree,
   }
 }
 
